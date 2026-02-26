@@ -1,0 +1,76 @@
+//@version=4
+strategy(title="Singh Strategy - OrderFill Automation",
+     overlay=true,
+     initial_capital=10000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0,
+     pyramiding=5,
+     process_orders_on_close=true,
+     calc_on_every_tick=true)
+
+// ===== INPUTS =====
+stopInput      = input(2.0,  "Stop N")
+riskPercent    = input(0.01, "Risk % of Capital")
+pyramidInput   = input(0.5,  "Pyramid N")
+maxUnits       = input(5,    "Max Pyramid Units")
+atrPeriod      = input(14,   "ATR Period")
+
+l1LongInput       = input(20, "L1 Long")
+l2LongInput       = input(55, "L2 Long")
+l1LongExitInput   = input(10, "L1 Exit")
+l2LongExitInput   = input(20, "L2 Exit")
+
+// ===== DATE FILTER =====
+FromDate = timestamp(2012, 1, 1, 0, 0)
+ToDate   = timestamp(9999, 1, 1, 23, 59)
+TradeDateIsAllowed = time >= FromDate and time <= ToDate
+
+// ===== LEVEL CALCULATION =====
+l1Long      = highest(l1LongInput)
+l2Long      = highest(l2LongInput)
+l1LongExit  = lowest(l1LongExitInput)
+l2LongExit  = lowest(l2LongExitInput)
+
+n = atr(atrPeriod)
+
+// ===== STATE =====
+var bool  inBuy        = false
+var float stopPrice    = na
+var float nextBuyPrice = na
+var int   totalBuys    = 0
+var string mode        = "L1"
+
+// ===== ENTRY CONDITIONS =====
+enterL1 = not inBuy and high > l1Long[1]
+enterL2 = not inBuy and high > l2Long[1]
+enterLong = (enterL1 or enterL2) and TradeDateIsAllowed
+
+// ===== EXIT CONDITION =====
+exitLong = inBuy and (low < stopPrice or (mode == "L1" and low < l1LongExit[1]) or (mode == "L2" and low < l2LongExit[1])) and TradeDateIsAllowed
+
+// ===== POSITION SIZING =====
+riskAmount = (strategy.initial_capital + strategy.netprofit) * riskPercent
+shares = floor(riskAmount / (stopInput * n))
+shares := max(shares, 0)
+
+// ===== EXECUTION WITH ALERT MESSAGE =====
+if enterLong
+    strategy.entry("LONG", strategy.long, qty=shares,
+         alert_message='{"signal":"ENTRY","side":"BUY"}')
+    inBuy        := true
+    totalBuys    := 1
+    stopPrice    := close - stopInput * n
+    nextBuyPrice := close + pyramidInput * n
+    mode         := enterL2 ? "L2" : "L1"
+
+if inBuy and high > nextBuyPrice and totalBuys < maxUnits
+    strategy.entry("PYRAMID", strategy.long, qty=shares,
+         alert_message='{"signal":"PYRAMID","side":"BUY"}')
+    totalBuys    := totalBuys + 1
+    stopPrice    := close - stopInput * n
+    nextBuyPrice := close + pyramidInput * n
+
+if exitLong
+    strategy.close("LONG",
+         alert_message='{"signal":"EXIT","side":"SELL"}')
+    inBuy := false
