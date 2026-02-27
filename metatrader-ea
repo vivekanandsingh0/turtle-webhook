@@ -7,7 +7,7 @@
 CTrade trade;
 
 // ===== INPUT =====
-input double LotSize = 0.01;
+input double LotSize = 10;
 
 // ===== GLOBALS =====
 datetime lastCandleTime = 0;
