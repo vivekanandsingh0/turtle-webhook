@@ -1,0 +1,89 @@
+//+------------------------------------------------------------------+
+//| Previous Candle Strict Breakout (No EMA)                        |
+//+------------------------------------------------------------------+
+#property strict
+
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+// ===== INPUT =====
+input double LotSize = 0.01;
+
+// ===== GLOBALS =====
+datetime lastCandleTime = 0;
+
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   return(INIT_SUCCEEDED);
+}
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   double prevHigh = iHigh(_Symbol, PERIOD_CURRENT, 1);
+   double prevLow  = iLow(_Symbol, PERIOD_CURRENT, 1);
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   datetime currentCandleTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+
+   static bool buyTriggered = false;
+   static bool sellTriggered = false;
+   static datetime storedCandleTime = 0;
+
+   // Reset triggers on new candle
+   if(currentCandleTime != storedCandleTime)
+   {
+      storedCandleTime = currentCandleTime;
+      buyTriggered = false;
+      sellTriggered = false;
+   }
+
+   // ================= ENTRY LOGIC =================
+   if(!PositionSelect(_Symbol))
+   {
+      // BUY breakout
+      if(!buyTriggered && ask > prevHigh)
+      {
+         trade.Buy(LotSize, _Symbol, ask, prevLow, 0);
+         buyTriggered = true;
+      }
+
+      // SELL breakout
+      if(!sellTriggered && bid < prevLow)
+      {
+         trade.Sell(LotSize, _Symbol, bid, prevHigh, 0);
+         sellTriggered = true;
+      }
+   }
+
+   // ================= TRAILING STOP =================
+   if(PositionSelect(_Symbol))
+   {
+      long type = PositionGetInteger(POSITION_TYPE);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+
+      // Update SL only once per new candle
+      if(currentCandleTime != lastCandleTime)
+      {
+         lastCandleTime = currentCandleTime;
+
+         if(type == POSITION_TYPE_BUY)
+         {
+            double newSL = prevLow;
+            if(newSL > currentSL)
+               trade.PositionModify(_Symbol, newSL, tp);
+         }
+
+         if(type == POSITION_TYPE_SELL)
+         {
+            double newSL = prevHigh;
+            if(newSL < currentSL || currentSL == 0)
+               trade.PositionModify(_Symbol, newSL, tp);
+         }
+      }
+   }
+}
+//+------------------------------------------------------------------+
