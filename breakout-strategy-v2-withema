@@ -1,0 +1,46 @@
+//@version=5
+strategy("Previous Candle Breakout + EMA Filter",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     pyramiding = 0)
+
+// === EMA Settings ===
+emaLength = input.int(200, title="EMA Length")
+emaValue  = ta.ema(close, emaLength)
+plot(emaValue, title="EMA", color=color.orange, linewidth=2)
+
+// === Previous Candle Levels ===
+prevHigh = high[1]
+prevLow  = low[1]
+
+// === Entry Conditions With EMA Filter ===
+longCondition  = high > prevHigh and close > emaValue and strategy.position_size == 0
+shortCondition = low < prevLow and close < emaValue and strategy.position_size == 0
+
+// === Execute Market Entries ===
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
+
+// === Trailing Stop Logic ===
+var float longSL  = na
+var float shortSL = na
+
+// For Long Position
+if (strategy.position_size > 0)
+    longSL := prevLow
+    strategy.exit("Long Exit", from_entry="Long", stop=longSL)
+
+// For Short Position
+if (strategy.position_size < 0)
+    shortSL := prevHigh
+    strategy.exit("Short Exit", from_entry="Short", stop=shortSL)
+
+// Reset SL when flat
+if (strategy.position_size == 0)
+    longSL := na
+    shortSL := na
