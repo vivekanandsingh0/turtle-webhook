@@ -1,0 +1,215 @@
+//+------------------------------------------------------------------+
+//|         Breakout + Progressive Risk + Candle Trailing EA        |
+//+------------------------------------------------------------------+
+#property strict
+
+input double BaseRiskPercent = 1.0;   // Base risk % per trade
+input double MultiplierStep  = 0.3;   // Multiplier increase after SL
+input double MaxMultiplier   = 2.0;   // Maximum multiplier cap
+input int    MaxSLReset      = 7;     // Reset after X consecutive SL
+input int    Slippage        = 20;
+
+int    sl_streak = 0;
+double current_multiplier = 1.0;
+datetime last_bar_time = 0;
+
+//+------------------------------------------------------------------+
+// Calculate lot size based on risk
+//+------------------------------------------------------------------+
+double CalculateLot(double sl_price,double entry_price)
+{
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double risk_amount = equity * (BaseRiskPercent/100.0) * current_multiplier;
+
+   double tick_value = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tick_size  = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+
+   double sl_distance = MathAbs(entry_price - sl_price);
+   if(sl_distance <= 0) return 0;
+
+   double lot = risk_amount / ((sl_distance/tick_size) * tick_value);
+
+   double minLot = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double lotStep= SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+
+   lot = MathMax(minLot, MathMin(lot,maxLot));
+   lot = NormalizeDouble(lot/lotStep,0)*lotStep;
+
+   return lot;
+}
+
+//+------------------------------------------------------------------+
+bool PositionExists()
+{
+   return PositionSelect(_Symbol);
+}
+
+//+------------------------------------------------------------------+
+// Update risk after trade close
+//+------------------------------------------------------------------+
+void UpdateRiskAfterClose(double profit)
+{
+   if(profit > 0)
+   {
+      sl_streak = 0;
+      current_multiplier = 1.0;
+      Print("TP hit → Risk Reset");
+   }
+   else
+   {
+      sl_streak++;
+
+      if(sl_streak >= MaxSLReset)
+      {
+         sl_streak = 0;
+         current_multiplier = 1.0;
+         Print("Max SL streak reached → Risk Reset");
+      }
+      else
+      {
+         current_multiplier = MathMin(1.0 + sl_streak * MultiplierStep,
+                                      MaxMultiplier);
+         Print("SL hit → Multiplier: ",current_multiplier);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+// Place market trade
+//+------------------------------------------------------------------+
+void PlaceTrade(bool buy,double sl_price)
+{
+   double price = buy ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
+                      : SymbolInfoDouble(_Symbol,SYMBOL_BID);
+
+   double lot = CalculateLot(sl_price,price);
+   if(lot <= 0)
+   {
+      Print("Invalid lot size");
+      return;
+   }
+
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = lot;
+   request.type   = buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price  = price;
+   request.sl     = sl_price;
+   request.deviation = Slippage;
+   request.type_filling = ORDER_FILLING_IOC;
+
+   if(!OrderSend(request,result))
+   {
+      Print("OrderSend failed: ",GetLastError());
+      return;
+   }
+
+   if(result.retcode != TRADE_RETCODE_DONE)
+      Print("Order failed: ",result.retcode);
+   else
+      Print("Trade placed: ",buy?"BUY":"SELL"," Lot:",lot);
+}
+
+//+------------------------------------------------------------------+
+// Trailing Stop (candle-to-candle)
+//+------------------------------------------------------------------+
+void TrailStop()
+{
+   if(!PositionSelect(_Symbol)) return;
+
+   double prev_high = iHigh(_Symbol,_Period,1);
+   double prev_low  = iLow(_Symbol,_Period,1);
+
+   ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
+   double current_sl = PositionGetDouble(POSITION_SL);
+   long type = PositionGetInteger(POSITION_TYPE);
+
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+
+   request.action = TRADE_ACTION_SLTP;
+   request.position = ticket;
+
+   if(type == POSITION_TYPE_BUY)
+   {
+      if(prev_low > current_sl)
+      {
+         request.sl = prev_low;
+         if(!OrderSend(request,result))
+            Print("Modify SL failed: ",GetLastError());
+         else
+            Print("Trailing SL updated (BUY)");
+      }
+   }
+   else if(type == POSITION_TYPE_SELL)
+   {
+      if(current_sl == 0 || prev_high < current_sl)
+      {
+         request.sl = prev_high;
+         if(!OrderSend(request,result))
+            Print("Modify SL failed: ",GetLastError());
+         else
+            Print("Trailing SL updated (SELL)");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   datetime current_bar = iTime(_Symbol,_Period,0);
+
+   // On new candle → trail stop
+   if(current_bar != last_bar_time)
+   {
+      last_bar_time = current_bar;
+
+      if(PositionExists())
+         TrailStop();
+   }
+
+   if(PositionExists()) return;
+
+   double prev_high = iHigh(_Symbol,_Period,1);
+   double prev_low  = iLow(_Symbol,_Period,1);
+
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+
+   // BUY breakout
+   if(bid > prev_high)
+      PlaceTrade(true,prev_low);
+
+   // SELL breakout
+   else if(bid < prev_low)
+      PlaceTrade(false,prev_high);
+}
+
+//+------------------------------------------------------------------+
+// Detect closed trades and update risk
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction& trans,
+                        const MqlTradeRequest& request,
+                        const MqlTradeResult& result)
+{
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+   {
+      ulong deal_ticket = trans.deal;
+
+      if(HistoryDealSelect(deal_ticket))
+      {
+         long deal_entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+         double deal_profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+
+         if(deal_entry == DEAL_ENTRY_OUT)
+         {
+            UpdateRiskAfterClose(deal_profit);
+         }
+      }
+   }
+}
